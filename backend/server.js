@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import {
+import db, {
   saveVerificationCode,
   verifyCode,
   getUser,
@@ -49,110 +49,140 @@ function calculatePoints(distance) {
 
 // AUTH ROUTES
 app.post('/api/auth/request-code', async (req, res) => {
-  const { email } = req.body;
-  
-  if (!email || !email.endsWith('iitr.ac.in')) {
-    return res.status(400).json({ error: 'Must use iitr.ac.in email' });
-  }
-  
-  const code = auth.generateVerificationCode();
-  console.log(`Generated code for ${email}: ${code}`)
+  try {
+    const { email } = req.body;
+    
+    if (!email || !email.endsWith('iitr.ac.in')) {
+      return res.status(400).json({ error: 'Must use iitr.ac.in email' });
+    }
+    
+    const code = auth.generateVerificationCode();
+    console.log(`Generated code for ${email}: ${code}`);
 
-  db.saveVerificationCode(email, code);
-  
-  await auth.sendVerificationEmail(email, code);
-  
-  res.json({ message: 'Verification code sent', code }); // Remove code in production
+    saveVerificationCode(email, code);
+    
+    await auth.sendVerificationEmail(email, code);
+    
+    res.json({ message: 'Verification code sent', code }); // Remove code in production
+  } catch (error) {
+    console.error('Error in request-code:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/auth/verify-code', (req, res) => {
-  const { email, code, name } = req.body;
-  
-  const verified = db.verifyCode(email, code);
-  
-  if (!verified) {
-    return res.status(400).json({ error: 'Invalid or expired code' });
+  try {
+    const { email, code, name } = req.body;
+    
+    const verified = verifyCode(email, code);
+    
+    if (!verified) {
+      return res.status(400).json({ error: 'Invalid or expired code' });
+    }
+    
+    let user = getUser(email);
+    if (!user) {
+      createUser(email, name || email.split('@')[0]);
+      user = getUser(email);
+    }
+    
+    const token = auth.generateToken(user.id, user.email);
+    
+    res.json({ token, user: { id: user.id, email: user.email, name: user.name } });
+  } catch (error) {
+    console.error('Error in verify-code:', error);
+    res.status(500).json({ error: error.message });
   }
-  
-  let user = db.getUser(email);
-  if (!user) {
-    db.createUser(email, name || email.split('@')[0]);
-    user = db.getUser(email);
-  }
-  
-  const token = auth.generateToken(user.id, user.email);
-  
-  res.json({ token, user: { id: user.id, email: user.email, name: user.name } });
 });
 
 // GAME ROUTES
 app.get('/api/challenge/today', auth.authMiddleware, (req, res) => {
-  const challenge = db.getTodayChallenge();
-  
-  if (!challenge) {
-    return res.status(404).json({ error: 'No challenge available today' });
+  try {
+    const challenge = getTodayChallenge();
+    
+    if (!challenge) {
+      return res.status(404).json({ error: 'No challenge available today' });
+    }
+    
+    const userGuesses = getUserGuesses(req.user.userId, challenge.id);
+    
+    // Return challenge without actual locations
+    res.json({
+      id: challenge.id,
+      date: challenge.date,
+      images: [
+        challenge.image1_url,
+        challenge.image2_url,
+        challenge.image3_url,
+        challenge.image4_url,
+        challenge.image5_url
+      ],
+      guesses: userGuesses,
+      completed: userGuesses.length === 5
+    });
+  } catch (error) {
+    console.error('Error in challenge/today:', error);
+    res.status(500).json({ error: error.message });
   }
-  
-  const userGuesses = db.getUserGuesses(req.user.userId, challenge.id);
-  
-  // Return challenge without actual locations
-  res.json({
-    id: challenge.id,
-    date: challenge.date,
-    images: [
-      challenge.image1_url,
-      challenge.image2_url,
-      challenge.image3_url,
-      challenge.image4_url,
-      challenge.image5_url
-    ],
-    guesses: userGuesses,
-    completed: userGuesses.length === 5
-  });
 });
 
 app.post('/api/challenge/guess', auth.authMiddleware, (req, res) => {
-  const { challengeId, imageNumber, lat, lng } = req.body;
-  
-  const challenge = db.getTodayChallenge();
-  
-  if (!challenge || challenge.id !== challengeId) {
-    return res.status(400).json({ error: 'Invalid challenge' });
+  try {
+    const { challengeId, imageNumber, lat, lng } = req.body;
+    
+    const challenge = getTodayChallenge();
+    
+    if (!challenge || challenge.id !== challengeId) {
+      return res.status(400).json({ error: 'Invalid challenge' });
+    }
+    
+    // Get actual location
+    const actualLat = challenge[`location${imageNumber}_lat`];
+    const actualLng = challenge[`location${imageNumber}_lng`];
+    
+    const distance = calculateDistance(lat, lng, actualLat, actualLng);
+    const points = calculatePoints(distance);
+    
+    saveGuess(req.user.userId, challengeId, imageNumber, lat, lng, distance, points);
+    
+    // Check if all 5 guesses are done
+    const allGuesses = getUserGuesses(req.user.userId, challengeId);
+    
+    if (allGuesses.length === 5) {
+      const totalPoints = allGuesses.reduce((sum, g) => sum + g.points, 0);
+      saveDailyScore(req.user.userId, challengeId, totalPoints);
+    }
+    
+    res.json({
+      distance: Math.round(distance),
+      points,
+      actualLocation: { lat: actualLat, lng: actualLng }
+    });
+  } catch (error) {
+    console.error('Error in challenge/guess:', error);
+    res.status(500).json({ error: error.message });
   }
-  
-  // Get actual location
-  const actualLat = challenge[`location${imageNumber}_lat`];
-  const actualLng = challenge[`location${imageNumber}_lng`];
-  
-  const distance = calculateDistance(lat, lng, actualLat, actualLng);
-  const points = calculatePoints(distance);
-  
-  db.saveGuess(req.user.userId, challengeId, imageNumber, lat, lng, distance, points);
-  
-  // Check if all 5 guesses are done
-  const allGuesses = db.getUserGuesses(req.user.userId, challengeId);
-  
-  if (allGuesses.length === 5) {
-    const totalPoints = allGuesses.reduce((sum, g) => sum + g.points, 0);
-    db.saveDailyScore(req.user.userId, challengeId, totalPoints);
-  }
-  
-  res.json({
-    distance: Math.round(distance),
-    points,
-    actualLocation: { lat: actualLat, lng: actualLng }
-  });
 });
 
 app.get('/api/leaderboard/daily', auth.authMiddleware, (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
-  const leaderboard = db.getDailyLeaderboard(today);
-  res.json(leaderboard);
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const leaderboard = getDailyLeaderboard(today);
+    res.json(leaderboard);
+  } catch (error) {
+    console.error('Error in leaderboard/daily:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get('/api/leaderboard/weekly', auth.authMiddleware, (req, res) => {
-  const leaderboard = db.getWeeklyLeaderboard();
-  res.json(leaderboard);
+  try {
+    const leaderboard = getWeeklyLeaderboard();
+    res.json(leaderboard);
+  } catch (error) {
+    console.error('Error in leaderboard/weekly:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ADMIN: Create daily challenge (for demo purposes)
@@ -160,7 +190,7 @@ app.post('/api/admin/create-challenge', (req, res) => {
   const { date, images, locations } = req.body;
   
   try {
-    const stmt = db.default.prepare(`
+    const stmt = db.prepare(`
       INSERT INTO daily_challenges (
         date, 
         image1_url, image2_url, image3_url, image4_url, image5_url,
@@ -184,6 +214,7 @@ app.post('/api/admin/create-challenge', (req, res) => {
     
     res.json({ message: 'Challenge created' });
   } catch (error) {
+    console.error('Error in admin/create-challenge:', error);
     res.status(400).json({ error: error.message });
   }
 });
