@@ -1,155 +1,60 @@
-import { useState, useEffect } from 'react';
-import './App.css';
-import Login from './components/Login';
-import ImageChallenge from './components/ImageChallenge';
-import Map from './components/Map';
-import Leaderboard from './components/Leaderboard';
+import { useState, useEffect } from 'react'
+import Login from './pages/Login.jsx'
+import Game from './pages/Game.jsx'
+import Leaderboard from './pages/Leaderboard.jsx'
 
-const API_URL = '/api';
-
-function App() {
-  const [token, setToken] = useState(localStorage.getItem('token'));
-  const [user, setUser] = useState(null);
-  const [challenge, setChallenge] = useState(null);
-  const [currentImage, setCurrentImage] = useState(0);
-  const [showLeaderboard, setShowLeaderboard] = useState(false);
-  const [result, setResult] = useState(null);
+export default function App() {
+  const [user, setUser] = useState(null)
+  const [page, setPage] = useState('game')
 
   useEffect(() => {
-    if (token) {
-      fetchChallenge();
-    }
-  }, [token]);
+    const stored = localStorage.getItem('wiir_user')
+    const token = localStorage.getItem('wiir_token')
+    if (stored && token) setUser(JSON.parse(stored))
+  }, [])
 
-  const fetchChallenge = async () => {
-    try {
-      const res = await fetch(`${API_URL}/challenge/today`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const data = await res.json();
-      setChallenge(data);
-      
-      // Find first unguessed image
-      const unguessedIndex = data.guesses.length;
-      setCurrentImage(Math.min(unguessedIndex, 4));
-    } catch (error) {
-      console.error('Error fetching challenge:', error);
-    }
-  };
-
-  const handleLogin = (newToken, userData) => {
-    setToken(newToken);
-    setUser(userData);
-    localStorage.setItem('token', newToken);
-  };
-
-  const handleLogout = () => {
-    setToken(null);
-    setUser(null);
-    localStorage.removeItem('token');
-  };
-
-  const handleGuess = async (lat, lng) => {
-    try {
-      const res = await fetch(`${API_URL}/challenge/guess`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          challengeId: challenge.id,
-          imageNumber: currentImage + 1,
-          lat,
-          lng
-        })
-      });
-      
-      const data = await res.json();
-      setResult(data);
-      
-      // Refresh challenge after 3 seconds
-      setTimeout(() => {
-        setResult(null);
-        fetchChallenge();
-        if (currentImage < 4) {
-          setCurrentImage(currentImage + 1);
-        }
-      }, 3000);
-    } catch (error) {
-      console.error('Error submitting guess:', error);
-    }
-  };
-
-  if (!token) {
-    return <Login onLogin={handleLogin} />;
+  function handleLogin(userData, token) {
+    localStorage.setItem('wiir_user', JSON.stringify(userData))
+    localStorage.setItem('wiir_token', token)
+    setUser(userData)
   }
 
-  if (showLeaderboard) {
-    return (
-      <div className="app">
-        <header>
-          <h1>🎯 WhereInIITR</h1>
-          <button onClick={() => setShowLeaderboard(false)} className="btn-secondary">
-            Back to Game
-          </button>
-          <button onClick={handleLogout} className="btn-secondary">Logout</button>
-        </header>
-        <Leaderboard token={token} />
-      </div>
-    );
+  function handleLogout() {
+    localStorage.removeItem('wiir_user')
+    localStorage.removeItem('wiir_token')
+    setUser(null)
   }
 
-  if (!challenge) {
-    return <div className="loading">Loading challenge...</div>;
-  }
+  if (!user) return <Login onLogin={handleLogin} />
 
   return (
-    <div className="app">
-      <header>
-        <h1>🎯 WhereInIITR</h1>
-        <div className="header-actions">
-          <button onClick={() => setShowLeaderboard(true)} className="btn-secondary">
-            🏆 Leaderboard
+    <div className="min-h-screen bg-[#0f1117]">
+      {/* Nav */}
+      <nav className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+        <span className="text-xl font-bold tracking-tight text-white">
+          📍 WhereInIITR
+        </span>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setPage('game')}
+            className={`text-sm px-3 py-1 rounded-full transition ${page === 'game' ? 'bg-white text-black font-semibold' : 'text-white/60 hover:text-white'}`}
+          >
+            Play
           </button>
-          <button onClick={handleLogout} className="btn-secondary">Logout</button>
+          <button
+            onClick={() => setPage('leaderboard')}
+            className={`text-sm px-3 py-1 rounded-full transition ${page === 'leaderboard' ? 'bg-white text-black font-semibold' : 'text-white/60 hover:text-white'}`}
+          >
+            Leaderboard
+          </button>
+          <span className="text-white/40 text-sm">{user.name}</span>
+          <button onClick={handleLogout} className="text-sm text-white/40 hover:text-white transition">
+            Logout
+          </button>
         </div>
-      </header>
+      </nav>
 
-      <div className="game-container">
-        <div className="progress-bar">
-          {[0, 1, 2, 3, 4].map(i => (
-            <div
-              key={i}
-              className={`progress-dot ${
-                challenge.guesses.find(g => g.image_number === i + 1) ? 'completed' : 
-                i === currentImage ? 'active' : ''
-              }`}
-            />
-          ))}
-        </div>
-
-        <ImageChallenge
-          imageUrl={challenge.images[currentImage]}
-          imageNumber={currentImage + 1}
-          isCompleted={!!challenge.guesses.find(g => g.image_number === currentImage + 1)}
-        />
-
-        <Map
-          onGuess={handleGuess}
-          result={result}
-          disabled={!!challenge.guesses.find(g => g.image_number === currentImage + 1)}
-        />
-
-        {challenge.completed && (
-          <div className="completion-message">
-            <h2>🎉 Challenge Completed!</h2>
-            <p>Check the leaderboard to see your ranking!</p>
-          </div>
-        )}
-      </div>
+      {page === 'game' ? <Game /> : <Leaderboard />}
     </div>
-  );
+  )
 }
-
-export default App;
