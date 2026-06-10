@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import MapPicker from '../components/MapPicker.jsx'
 import ScoreCard from '../components/ScoreCard.jsx'
 
-const API = 'http://localhost:3001'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:3001'
 
 export default function Game() {
   const [challenge, setChallenge] = useState(null)
