@@ -1,5 +1,9 @@
 import 'dotenv/config';
 import express from 'express';
+import multer from 'multer';
+import exifr from 'exifr';
+import { v2 as cloudinary } from 'cloudinary';
+import { Readable } from 'stream';
 import cors from 'cors';
 import db, {
   saveVerificationCode, verifyCode, getUser, createUser,
@@ -7,6 +11,14 @@ import db, {
   saveDailyScore, getDailyLeaderboard, getWeeklyLeaderboard
 } from './database.js';
 import * as auth from './auth.js';
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -32,11 +44,12 @@ function calculatePoints(distance) {
   return 100;
 }
 
+// AUTH
 app.post('/api/auth/request-code', async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email || !email.endsWith('@iitr.ac.in')) {
-      return res.status(400).json({ error: 'Must use an @iitr.ac.in email' });
+    if (!email || !email.endsWith('iitr.ac.in')) {
+      return res.status(400).json({ error: 'Must use an iitr.ac.in email' });
     }
     const code = auth.generateVerificationCode();
     saveVerificationCode(email, code);
@@ -65,6 +78,7 @@ app.post('/api/auth/verify-code', (req, res) => {
   }
 });
 
+// GAME
 app.get('/api/challenge/today', auth.authMiddleware, (req, res) => {
   try {
     const challenge = getTodayChallenge();
@@ -105,6 +119,7 @@ app.post('/api/challenge/guess', auth.authMiddleware, (req, res) => {
   }
 });
 
+// LEADERBOARD
 app.get('/api/leaderboard/daily', auth.authMiddleware, (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
@@ -122,30 +137,70 @@ app.get('/api/leaderboard/weekly', auth.authMiddleware, (req, res) => {
   }
 });
 
-// Admin: seed a challenge for today (for testing)
-app.post('/api/admin/create-challenge', (req, res) => {
-  const { date, images, locations } = req.body;
+// ADMIN: password middleware
+function adminAuth(req, res, next) {
+  const password = req.headers['x-admin-password'];
+  if (!password || password !== process.env.ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+// ADMIN: upload images + auto extract GPS
+app.post('/api/admin/upload-challenge', adminAuth, upload.array('images', 5), async (req, res) => {
   try {
+    const files = req.files;
+    if (!files || files.length !== 5) {
+      return res.status(400).json({ error: 'Upload exactly 5 images' });
+    }
+
+    const results = await Promise.all(files.map(async (file) => {
+      const gps = await exifr.gps(file.buffer);
+      if (!gps) throw new Error(`No GPS data in ${file.originalname}. Make sure Location Services was on.`);
+
+      const url = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'whereiniitr', format: 'jpg' },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result.secure_url);
+          }
+        );
+        Readable.from(file.buffer).pipe(stream);
+      });
+
+      return { url, lat: gps.latitude, lng: gps.longitude };
+    }));
+
+    const today = new Date().toISOString().split('T')[0];
+    db.prepare(`DELETE FROM daily_challenges WHERE date = ?`).run(today);
     db.prepare(`
       INSERT INTO daily_challenges (
         date,
         image1_url, image2_url, image3_url, image4_url, image5_url,
-        location1_lat, location1_lng, location2_lat, location2_lng,
-        location3_lat, location3_lng, location4_lat, location4_lng,
+        location1_lat, location1_lng,
+        location2_lat, location2_lng,
+        location3_lat, location3_lng,
+        location4_lat, location4_lng,
         location5_lat, location5_lng
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      date,
-      images[0], images[1], images[2], images[3], images[4],
-      locations[0].lat, locations[0].lng,
-      locations[1].lat, locations[1].lng,
-      locations[2].lat, locations[2].lng,
-      locations[3].lat, locations[3].lng,
-      locations[4].lat, locations[4].lng
+      today,
+      results[0].url, results[1].url, results[2].url, results[3].url, results[4].url,
+      results[0].lat, results[0].lng,
+      results[1].lat, results[1].lng,
+      results[2].lat, results[2].lng,
+      results[3].lat, results[3].lng,
+      results[4].lat, results[4].lng
     );
-    res.json({ message: 'Challenge created' });
+
+    res.json({
+      message: 'Challenge created for today',
+      locations: results.map(r => ({ lat: r.lat, lng: r.lng }))
+    });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

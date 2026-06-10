@@ -12,8 +12,8 @@ export default function Login({ onLogin }) {
 
   async function requestCode() {
     setError('')
-    if (!email.endsWith('@iitr.ac.in')) {
-      setError('Only @iitr.ac.in emails allowed')
+    if (!email.endsWith('iitr.ac.in')) {
+      setError('Only iitr.ac.in emails allowed')
       return
     }
     setLoading(true)
@@ -77,7 +77,7 @@ export default function Login({ onLogin }) {
                 <label className="text-xs text-white/50 uppercase tracking-widest mb-1 block">IITR Email</label>
                 <input
                   className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white text-sm outline-none focus:border-white/30 transition"
-                  placeholder="you@iitr.ac.in"
+                  placeholder="you@..iitr.ac.in"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && requestCode()}
